@@ -136,6 +136,10 @@ EXCHANGE_PLANS = {
     ExchangePlan.PLAN500.value: 500,
 }
 
+"""主号专属兑换：主号（yanwu202108）攒到 200 分才兑换，其余账号仍用 GLADOS_EXCHANGE_PLAN 的全局计划"""
+MAIN_ACCOUNT_NAME = "yanwu202108"
+MAIN_ACCOUNT_PLAN = ExchangePlan.PLAN200.value
+
 """"真值"型环境变量的可接受取值"""
 TRUTHY = ("true", "1", "yes", "y")
 FALSY = ("false", "0", "no", "n")
@@ -287,6 +291,7 @@ class CookieEntry:
     origin: str = ""
     user_agent: str = ""  # 提取 Cookie 时的浏览器 UA；空表示用默认 UA
     verbose: bool = False
+    is_main: bool = False  # 主号标记：解析时认领，决定兑换计划（主号 plan200，其余全局计划）
     result: CheckinResult = field(default_factory=CheckinResult)
 
     # ---------------- 构建 ----------------
@@ -379,13 +384,16 @@ class CookieEntry:
 
     def _apply_exchange(self, api: "API", config: "Config", domain: str) -> str:
         """按配置执行兑换；未配置时返回空串（配置状态不进推送正文）"""
-        required = config.exchange_plans.get(config.exchange_plan)
-        if required is None:
+        if config.exchange_plans.get(config.exchange_plan) is None:
             self.log(domain, LogEmoji.INFO, "未配置兑换计划，跳过自动兑换")
             return ""
 
-        self.log(domain, LogEmoji.EXCHANGE, f"开始兑换 {config.exchange_plan} (需要 {required} 积分)")
-        return api.exchange(config.exchange_plan)
+        # 主号攒到 200 分才兑换（plan200）；其余账号沿用全局计划
+        plan = MAIN_ACCOUNT_PLAN if self.is_main else config.exchange_plan
+        required = config.exchange_plans[plan]
+
+        self.log(domain, LogEmoji.EXCHANGE, f"开始兑换 {plan} (需要 {required} 积分)")
+        return api.exchange(plan)
 
     @staticmethod
     def _expiry_note(days: Optional[int]) -> str:
@@ -626,6 +634,14 @@ class Accounts:
             entry = CookieEntry.build(len(entries) + 1, cookie, name, origin, user_agent, verbose)
             seen[cookie] = entry.label
             entries.append(entry)
+
+        # 认领主号：优先按 Secret 登记名精确匹配；未命中时按顺序认第一段
+        # （GLADOS_COOKIES 三段顺序固定为 主号、1083、1081，主号恒为第一段）
+        if entries:
+            main_entry = next((e for e in entries if e.name == MAIN_ACCOUNT_NAME), entries[0])
+            main_entry.is_main = True
+            logger.info(f"{LogEmoji.INFO} 主号为 [{main_entry.label}]，使用 {MAIN_ACCOUNT_PLAN} 兑换；其余账号使用全局兑换计划")
+
         return entries
 
 
